@@ -1,82 +1,110 @@
-use bevy::{prelude::*, input::keyboard};
+mod plugins;
+mod components;
+mod constants;
+mod resources;
 
-const TIME_STEP: f32 = 1.0 / 60.0;
+use bevy::prelude::*;
+use rand::prelude::*;
+use bevy::sprite::collide_aabb::collide;
+use bevy::render::camera::ScalingMode;
+use plugins::input::InputPlugin;
+use components::Bullet;
+use components::PlayerShip;
+use components::Enemy;
+use resources::GameData;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin { 
+            window: WindowDescriptor {
+                title: "Space Shooter".to_string(),
+                width: 800.0,
+                height: 600.0,
+                ..Default::default()
+            },
+            ..default()
+        }))
+        .add_plugin(InputPlugin)
         .add_startup_system(setup)
-        .add_system(sprite_movement)
-        .add_system(sprite_rotation)
-        .add_system(bullet_firing)
+        .insert_resource(GameData::default())
         .add_system(move_bullets)
+        .add_system(spawn_enemies)
         .add_system(check_collisions)
         .run();
-}
-#[derive(Component)]
-struct PlayerShip {
-    rotation_speed: f32,
-}
-
-#[derive(Component)]
-struct Bullet {
-    speed: f32
 }
 
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
 ) {
-    commands.spawn(Camera2dBundle::default());
+    let mut camera = Camera2dBundle::default();
+    camera.projection.scaling_mode = ScalingMode::FixedVertical(600.);
+    commands.spawn(camera);
     commands.spawn((
         SpriteBundle {
             texture: asset_server.load("./ship-1.png"),
             ..default()
         },
-        PlayerShip {
-            rotation_speed: f32::to_radians(360.0) / 2.0,
-        }
+        PlayerShip::default(),
     ));
 }
 
-fn bullet_firing(
-    keyboard_input: Res<Input<KeyCode>>,
+fn spawn_enemies(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mut query: Query<(&Transform, With<PlayerShip>)>,
+    windows: ResMut<Windows>,
+    time: Res<Time>,
+    mut game_data: ResMut<GameData>,
 ) {
-    if keyboard_input.just_pressed(KeyCode::Space) {
-        let (ship_transform, _) = query.single_mut();
-        commands.spawn((SpriteBundle {
-            texture: asset_server.load("./bullet.png"),
-            transform: Transform {
-                translation: ship_transform.translation,
-                rotation: ship_transform.rotation,
-                ..Default::default()
-            },
+    if game_data.enemy_count >= 10 {
+        return;
+    }
+
+    game_data.enemy_timer.tick(time.delta());
+
+    if !game_data.enemy_timer.finished() {
+        return;
+    }
+
+    let max_right = windows.get_primary().unwrap().width() / 2.0;
+    let max_left = -max_right;
+
+    let max_top = windows.get_primary().unwrap().height() / 2.0;
+    let max_bottom = -max_top;
+
+    let mut rng = rand::thread_rng();
+    let x = rng.gen_range(max_left..max_right);
+    let y = rng.gen_range(max_bottom..max_top);
+
+    commands.spawn((SpriteBundle {
+        texture: asset_server.load("./enemy-1.png"),
+        transform: Transform {
+            scale: Vec3::new(0.15, 0.15, 0.15),
+            translation: Vec3::new(x, y, 0.0),
             ..Default::default()
         },
-        Bullet {
-            speed: 500.0
-        }));
-    }
+        ..Default::default()
+    },
+    Enemy::default()));
+    game_data.enemy_count += 1;
 }
 
 fn move_bullets(
-    mut commands: Commands,
     mut query: Query<(Entity, &mut Transform, &Bullet)>,
-    windows: ResMut<Windows>
+    timer: Res<Time>,
 ) {
-    for (entity, mut transform, bullet) in query.iter_mut() {
+    for (_entity, mut transform, bullet) in query.iter_mut() {
         let movement_direction = transform.rotation * Vec3::new(0.0, 1.0, 0.0);
-        transform.translation += movement_direction * bullet.speed * TIME_STEP;
+        transform.translation += movement_direction * bullet.speed * timer.delta_seconds();
     }
 }
 
 fn check_collisions(
     mut commands: Commands,
-    mut query: Query<(Entity, &Transform, &Sprite, With<Bullet>)>,
+    mut player_bullet_query: Query<(Entity, &Transform, &Sprite, With<Bullet>)>,
+    mut enemy_ship_query: Query<(Entity, &Transform, &Sprite, With<Enemy>)>,
     windows: ResMut<Windows>,
+    mut game_data: ResMut<GameData>,
 ) {
     let max_right = windows.get_primary().unwrap().width() / 2.0;
     let max_left = -max_right;
@@ -84,78 +112,49 @@ fn check_collisions(
     let max_top = windows.get_primary().unwrap().height() / 2.0;
     let max_bottom = -max_top;
 
-    for (entity, transform, _, _) in query.iter_mut() {
+    for (entity, transform, _, _) in player_bullet_query.iter_mut() {
         if transform.translation.x > max_right {
             commands.entity(entity).despawn();
+            game_data.bullet_count -= 1;
+
+            println!("Bullet count: {}", game_data.bullet_count);
         }
 
         if transform.translation.x < max_left {
             commands.entity(entity).despawn();
+            game_data.bullet_count -= 1;
+
+            println!("Bullet count: {}", game_data.bullet_count);
         }
 
         if transform.translation.y > max_top {
             commands.entity(entity).despawn();
+            game_data.bullet_count -= 1;
+
+            println!("Bullet count: {}", game_data.bullet_count);
         }
 
         if transform.translation.y < max_bottom {
             commands.entity(entity).despawn();
+            game_data.bullet_count -= 1;
+
+            println!("Bullet count: {}", game_data.bullet_count);
         }
     }
-}
 
-fn sprite_rotation(
-    keyboard_input: Res<Input<KeyCode>>,
-    mut query: Query<(&PlayerShip, &mut Transform)>,
-) {
-    let (ship, mut ship_transform) = query.single_mut();
-    let mut rotation_factor = 0.0;
-
-    if keyboard_input.pressed(KeyCode::Left) {
-        rotation_factor += 1.0;
+    for (entity, transform, _, _) in enemy_ship_query.iter_mut() {
+        for (bullet_entity, bullet_transform, bullet_sprite, _) in player_bullet_query.iter_mut() {
+            if collide(
+                transform.translation,
+                Vec2::new(32., 32.),
+                bullet_transform.translation,
+                Vec2::new(12., 12.),
+            ).is_some() {
+                commands.entity(entity).despawn();
+                commands.entity(bullet_entity).despawn();
+                game_data.bullet_count -= 1;
+                game_data.enemy_count -= 1;
+            }
+        }
     }
-
-    if keyboard_input.pressed(KeyCode::Right) {
-        rotation_factor -= 1.0;
-    }
-
-    ship_transform.rotate(Quat::from_rotation_z(
-        rotation_factor * ship.rotation_speed * TIME_STEP,
-    ));
-}
-
-fn sprite_movement(
-    keyboard_input: Res<Input<KeyCode>>,
-    mut query: Query<(&mut Transform, &mut Sprite, With<PlayerShip>)>,
-    windows: ResMut<Windows>,
-) {
-    let mut ship_transform = query.single_mut();
-    let mut x_direction: f32 = 0.0;
-    let mut y_direction: f32 = 0.0;
-
-    if keyboard_input.pressed(KeyCode::A) {
-        x_direction -= 2.0;
-    }
-
-    if keyboard_input.pressed(KeyCode::D) {
-        x_direction += 2.0;
-    }
-
-    if keyboard_input.pressed(KeyCode::W) {
-        y_direction += 2.0;
-    }
-
-    if keyboard_input.pressed(KeyCode::S) {
-        y_direction -= 2.0;
-    }
-
-    let new_x = ship_transform.0.translation.x + x_direction;
-    let new_y = ship_transform.0.translation.y + y_direction;
-    let max_right = windows.get_primary().unwrap().width() / 2.0;
-    let max_left = -max_right;
-
-    let max_top = windows.get_primary().unwrap().height() / 2.0;
-    let max_bottom = -max_top;
-
-    ship_transform.0.translation.x = new_x.clamp(max_left, max_right);
-    ship_transform.0.translation.y = new_y.clamp(max_bottom, max_top);
 }
